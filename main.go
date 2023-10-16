@@ -296,6 +296,7 @@ func sampleStationStatus(metrics *BaywheelsMetrics, stationIdToName map[string]s
 }
 
 func sampleBaywheelsMetrics(metrics *BaywheelsMetrics) {
+	log.Println("Sampling GBFS API")
 	stationIdToName := sampleStationInformation(metrics)
 	sampleStationStatus(metrics, stationIdToName)
 	sampleFreeBikeStatus(metrics)
@@ -315,8 +316,7 @@ func main() {
 
 	// sample at 1 minute intervals
 	go func() {
-		for t := range ticker.C {
-			log.Println("Sampling at", t)
+		for range ticker.C {
 			sampleBaywheelsMetrics(metrics)
 		}
 	}()

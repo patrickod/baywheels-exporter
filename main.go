@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -109,55 +110,55 @@ func NewMetrics(reg prometheus.Registerer) *BaywheelsMetrics {
 			Name: "station_last_report",
 			Help: "Station status report last check-in timestamp",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_is_returning: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_is_returning",
 			Help: "Station is_returning status",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_is_renting: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_is_renting",
 			Help: "Station is_renting status",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_is_installed: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_is_installed",
 			Help: "Station is_installed status",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_bikes_available: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_bikes_available",
 			Help: "Number of bikes available at the station",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_bikes_disabled: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_bikes_disabled",
 			Help: "Number of bikes disabled at the station",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_docks_available: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_docks_available",
 			Help: "Number of docks available at the station",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_docks_disabled: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_docks_disabled",
 			Help: "Number of docks disabled at the station",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 		station_ebikes_available: *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "station_ebikes_available",
 			Help: "Number of ebikes available at the station",
 		},
-			[]string{"station_id"},
+			[]string{"station_id", "name"},
 		),
 	}
 	reg.MustRegister(m.station_capacity)
@@ -176,47 +177,65 @@ func NewMetrics(reg prometheus.Registerer) *BaywheelsMetrics {
 	return m
 }
 
-func sampleStationInformation(metrics *BaywheelsMetrics) {
+// / Sample the station information and return a map of station_id to station
+// / name that will be used to label other metrics.
+func sampleStationInformation(metrics *BaywheelsMetrics) map[string]string {
 	stationInformation, err := http.Get(fmt.Sprintf("%s/station_information.json", BaywheelsURI))
+	stationIdToName := make(map[string]string)
 	if err != nil {
-		fmt.Printf("Error sampling station information %s\n", err)
-		return
+		log.Printf("Error sampling station information %s\n", err)
+		return stationIdToName
 	}
+	if stationInformation.StatusCode > 299 {
+		log.Printf("Error sampling station information %s\n", err)
+		return stationIdToName
+	}
+
 	body, err := io.ReadAll(stationInformation.Body)
 	defer stationInformation.Body.Close()
 	if err != nil {
-		fmt.Printf("Error sampling station information %s\n", err)
-		return
+		log.Printf("Error sampling station information %s\n", err)
+		return stationIdToName
 	}
 
 	var response StationInformationResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		fmt.Printf("Error sampling station information %s\n", err)
-		return
+		log.Printf("Error sampling station information %s\n", err)
+		return stationIdToName
 	} else {
 		for _, station := range response.Data.Stations {
+			// record the capacity metric
 			metrics.station_capacity.With(prometheus.Labels{"station_id": station.StationId, "name": station.Name}).Set(float64(station.Capacity))
+
+			// map ID to name for later use
+			stationIdToName[station.StationId] = station.Name
 		}
 	}
+
+	return stationIdToName
 }
 
-func sampleBikeInformation(metrics *BaywheelsMetrics) {
-	bikeInformation, err := http.Get(fmt.Sprintf("%s/free_bike_status.json", BaywheelsURI))
+func sampleFreeBikeStatus(metrics *BaywheelsMetrics) {
+	freeBikeStatus, err := http.Get(fmt.Sprintf("%s/free_bike_status.json", BaywheelsURI))
 	if err != nil {
-		fmt.Printf("Error sampling bike status %s\n", err)
+		log.Printf("Error sampling bike status %s\n", err)
+		return
+	}
+	if freeBikeStatus.StatusCode > 299 {
+		log.Printf("Error sampling free bike status %s\n", freeBikeStatus.Status)
 		return
 	}
 
-	body, err := io.ReadAll(bikeInformation.Body)
-	defer bikeInformation.Body.Close()
+	body, err := io.ReadAll(freeBikeStatus.Body)
+	defer freeBikeStatus.Body.Close()
 	if err != nil {
-		fmt.Printf("Error sampling bike status %s\n", err)
+		log.Printf("Error sampling bike status %s\n", err)
 		return
 	}
 
 	var response BikeStatusResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		fmt.Printf("Error sampling bike status %s\n", err)
+		log.Printf("Error sampling bike status %s\n", err)
 		return
 	} else {
 		for _, bike := range response.Data.Bikes {
@@ -226,51 +245,60 @@ func sampleBikeInformation(metrics *BaywheelsMetrics) {
 	}
 }
 
-func sampleStationStatus(metrics *BaywheelsMetrics) {
+func sampleStationStatus(metrics *BaywheelsMetrics, stationIdToName map[string]string) {
 	stationStatus, err := http.Get(fmt.Sprintf("%s/station_status.json", BaywheelsURI))
 	if err != nil {
-		fmt.Printf("Error sampling station status %s\n", err)
+		log.Printf("Error sampling station status %s\n", err)
+		return
+	}
+	if stationStatus.StatusCode > 299 {
+		log.Printf("Error sampling station status %s\n", stationStatus.Status)
 		return
 	}
 
 	body, err := io.ReadAll(stationStatus.Body)
 	defer stationStatus.Body.Close()
 	if err != nil {
-		fmt.Printf("Error sampling station status %s\n", err)
+		log.Printf("Error sampling station status %s\n", err)
 		return
 	}
 
 	var response StationStatusResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		fmt.Printf("Error sampling station status %s\n", err)
+		log.Printf("Error sampling station status %s\n", err)
 		return
 	} else {
 		for _, station := range response.Data.Stations {
+			// get human readable station name
+			stationName, ok := stationIdToName[station.StationId]
+			if !ok {
+				stationName = "unknown"
+			}
+
 			// station stats
-			metrics.station_last_report.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.LastReported))
-			metrics.station_is_returning.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.IsReturning))
-			metrics.station_is_renting.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.IsRenting))
-			metrics.station_is_installed.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.IsInstalled))
+			metrics.station_last_report.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.LastReported))
+			metrics.station_is_returning.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.IsReturning))
+			metrics.station_is_renting.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.IsRenting))
+			metrics.station_is_installed.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.IsInstalled))
 
 			// pedal bike stats
-			metrics.station_bikes_available.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.BikesAvailable))
-			metrics.station_bikes_disabled.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.BikesDisabled))
+			metrics.station_bikes_available.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.BikesAvailable))
+			metrics.station_bikes_disabled.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.BikesDisabled))
 
 			// dock stats
-			metrics.station_docks_available.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.DocksAvailable))
-			metrics.station_docks_disabled.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.DocksDisabled))
+			metrics.station_docks_available.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.DocksAvailable))
+			metrics.station_docks_disabled.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.DocksDisabled))
 
 			// e-bike stats
-			metrics.station_ebikes_available.With(prometheus.Labels{"station_id": station.StationId}).Set(float64(station.EBikesAvailable))
+			metrics.station_ebikes_available.With(prometheus.Labels{"station_id": station.StationId, "name": stationName}).Set(float64(station.EBikesAvailable))
 		}
 	}
-
 }
 
 func sampleBaywheelsMetrics(metrics *BaywheelsMetrics) {
-	sampleStationInformation(metrics)
-	sampleStationStatus(metrics)
-	sampleBikeInformation(metrics)
+	stationIdToName := sampleStationInformation(metrics)
+	sampleStationStatus(metrics, stationIdToName)
+	sampleFreeBikeStatus(metrics)
 }
 
 func main() {
@@ -278,18 +306,23 @@ func main() {
 	metrics := NewMetrics(registry)
 	ticker := time.NewTicker(60 * time.Second)
 
+	listen := flag.String("listen", ":9100", "Listen address")
+
+	flag.Parse()
+
 	// sample at startup
 	sampleBaywheelsMetrics(metrics)
 
 	// sample at 1 minute intervals
 	go func() {
 		for t := range ticker.C {
-			fmt.Println("Sampling at", t)
+			log.Println("Sampling at", t)
 			sampleBaywheelsMetrics(metrics)
 		}
 	}()
 
 	// Serve the prometheus metrics
+	log.Printf("Listening on %s\n", *listen)
 	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}))
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", ListenPort), nil))
+	log.Fatal(http.ListenAndServe(*listen, nil))
 }
